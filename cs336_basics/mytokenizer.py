@@ -8,11 +8,39 @@ def _pre_tokenize(text: str):
     for m in re.finditer(PAT, text):
         yield m.group()
 
-def _init_sequences(lines: List[str]) -> List[List[bytes]]:
+def _compile_special_pattern(special_tokens: List[str]) -> re.Pattern | None:
+    '''
+    import re
+    special_tokens = ["<|endoftext|>", "<pad>"]
+    pat = re.compile("(" + "|".join(re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)) + ")")
+    corpus = "Hello<|endoftext|>World<pad>Byehellohello"
+    parts = pat.split(corpus)
+    print(parts)
+    ['Hello', '<|endoftext|>', 'World', '<pad>', 'Byehellohello']
+    '''
+    if not special_tokens:
+        return None
+    # order according to the length
+    parts = [re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)]
+    return re.compile("(" + "|".join(parts) + ")")
+
+def _init_sequences(corpus: List[str], special_tokens: List[str]) -> List[List[bytes]]:
     # every token is a sequence of utf-8 bytes
     sequences = []
-    for line in lines:
-        for tok in _pre_tokenize(line):
+    special_pat = _compile_special_pattern(special_tokens)
+    if special_pat:
+        parts = special_pat.split(corpus)
+        for i, part in enumerate(parts):
+            # odd indices are special tokens
+            if i % 2 == 1:
+                continue
+            if not part:
+                continue
+            for tok in _pre_tokenize(part):
+                b = tok.encode('utf-8')
+                sequences.append([bytes([x]) for x in b])
+    else:
+        for tok in _pre_tokenize(corpus):
             b = tok.encode('utf-8')
             sequences.append([bytes([x]) for x in b])
     return sequences
@@ -64,9 +92,9 @@ def BPE_tokenizer_training(input_path: str, vocab_size: int, special_tokens: Lis
         next_id += 1
 
     with open(input_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+        corpus = f.read()
     
-    sequences = _init_sequences(lines)
+    sequences = _init_sequences(corpus, special_tokens)
     pair_counts = _count_all_pairs(sequences)
     
     while len(vocab) < vocab_size and pair_counts:
