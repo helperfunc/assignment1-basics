@@ -24,7 +24,7 @@ def _compile_special_pattern(special_tokens: List[str]) -> re.Pattern | None:
     parts = [re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)]
     return re.compile("(" + "|".join(parts) + ")")
 
-def _init_sequences(corpus: List[str], special_tokens: List[str]) -> List[List[bytes]]:
+def _init_sequences(corpus: str, special_tokens: List[str]) -> List[List[bytes]]:
     # every token is a sequence of utf-8 bytes
     sequences = []
     special_pat = _compile_special_pattern(special_tokens)
@@ -52,11 +52,36 @@ def _count_all_pairs(sequences: List[List[bytes]]) -> Dict[Tuple[bytes, bytes], 
             counts[(seq[i], seq[i+1])] += 1
     return counts
 
-def _merge_in_sequence(seq: List[bytes], a: bytes, b: bytes) -> None:
+def _dec(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes]):
+    v = counts.get(pair)
+    if v is None:
+        return 
+    if v <= 1:
+        del counts[pair]
+    else:
+        counts[pair] = v - 1
+
+def _inc(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes]):
+    counts[pair] = counts.get(pair, 0) + 1
+
+def _merge_sequence_incremental(seq: List[bytes], a: bytes, b: bytes, new_tok: bytes, 
+                                pair_counts: Dict[Tuple[bytes, bytes], int]) -> None:
     i = 0
     while i < len(seq) - 1:
         if seq[i] == a and seq[i+1] == b:
-            seq[i:i+2] = [a+b]
+            prev_tok = seq[i-1] if i - 1 >= 0 else None
+            next_tok = seq[i+2] if i + 2 < len(seq) else None # token after b
+            if prev_tok is not None:
+                _dec(pair_counts, (prev_tok, a))
+            _dec(pair_counts, (a, b))
+            if next_tok is not None:
+                _dec(pair_counts, (b, next_tok))
+            seq[i:i+2] = [new_tok]
+            if prev_tok is not None:
+                _inc(pair_counts, (prev_tok, new_tok))
+            if next_tok is not None:
+                _inc(pair_counts, (new_tok, next_tok))
+            i += 1 # advance past the merged token
         else:
             i += 1
 
@@ -109,11 +134,8 @@ def BPE_tokenizer_training(input_path: str, vocab_size: int, special_tokens: Lis
 
         # merge the (a, b) on all the sequences
         for seq in sequences:
-            _merge_in_sequence(seq, a, b)
+            _merge_sequence_incremental(seq, a, b, new_token, pair_counts)
         
-        # count all the pairs
-        if len(vocab) < vocab_size:
-            pair_counts = _count_all_pairs(sequences)
     return vocab, merges
 
 # vocab, merges = BPE_tokenizer_training(r"tests\fixtures\tinystories_sample.txt", 300, ["<|endoftext|>"])
