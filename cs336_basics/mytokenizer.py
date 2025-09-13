@@ -6,6 +6,8 @@ from typing import BinaryIO
 import multiprocessing as mp
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+TOKEN_RE = re.compile(PAT)
+SINGLE_BYTES = [byte([i]) for i in range(256)]
 
 def find_chunk_boundaries(file, desired_num_chunks: int, split_special_token: bytes) -> List[int]:
     assert isinstance(split_special_token, bytes)
@@ -60,7 +62,7 @@ def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_pro
         return _init_sequences_parallel(input_path, special_tokens, 1)
     tasks = [(start, end, input_path, special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:]) if end > start]
     with mp.Pool(processes=min(num_processes, len(tasks))) as pool:
-        parts = pool.mp(_process_file_chunk, tasks)
+        parts = pool.map(_process_file_chunk, tasks)
     out = []
     for p in parts:
         out.extend(p)
