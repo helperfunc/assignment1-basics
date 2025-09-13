@@ -1,3 +1,8 @@
-import importlib.metadata
+from importlib import metadata
 
-__version__ = importlib.metadata.version("cs336_basics")
+try:
+    __version__ = metadata.version(__name__)
+except metadata.PackageNotFoundError:
+    __version__ = "0.0.0"
+
+__all__ = ["__version__"]
