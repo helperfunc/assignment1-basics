@@ -41,6 +41,9 @@ def _process_file_chunk(args):
         f.seek(start)
         data = f.read(end - start)
     text = data.decode("utf-8", errors="ignore")
+    # Normalize Windows newlines so parallel path matches serial path snapshot expectations
+    if '\r' in text:
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
     return _init_sequences(text, special_tokens)
 
 def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_processes: int) -> List[List[bytes]]:
