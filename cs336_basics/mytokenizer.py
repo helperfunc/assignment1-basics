@@ -7,7 +7,7 @@ import multiprocessing as mp
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 TOKEN_RE = re.compile(PAT)
-SINGLE_BYTES = [byte([i]) for i in range(256)]
+SINGLE_BYTES = [bytes([i]) for i in range(256)]
 
 def find_chunk_boundaries(file, desired_num_chunks: int, split_special_token: bytes) -> List[int]:
     assert isinstance(split_special_token, bytes)
@@ -69,7 +69,7 @@ def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_pro
     return out
 
 def _pre_tokenize(text: str):
-    for m in re.finditer(PAT, text):
+    for m in TOKEN_RE.finditer(text):
         yield m.group()
 
 def _compile_special_pattern(special_tokens: List[str]) -> re.Pattern | None:
@@ -102,49 +102,51 @@ def _init_sequences(corpus: str, special_tokens: List[str]) -> List[List[bytes]]
                 continue
             for tok in _pre_tokenize(part):
                 b = tok.encode('utf-8')
-                sequences.append([bytes([x]) for x in b])
+                sequences.append([SINGLE_BYTES[x] for x in b])
     else:
         for tok in _pre_tokenize(corpus):
             b = tok.encode('utf-8')
-            sequences.append([bytes([x]) for x in b])
+            sequences.append([SINGLE_BYTES[x] for x in b])
     return sequences
 
-def _count_all_pairs(sequences: List[List[bytes]]) -> Dict[Tuple[bytes, bytes], int]:
+def _count_all_pairs_weighted(sequences: List[List[bytes]], freqs: List[int]) -> Dict[Tuple[bytes, bytes], int]:
     counts = defaultdict(int)
-    for seq in sequences:
+    for seq, f in zip(sequences, freqs):
+        if len(seq) < 2:
+            continue
         for i in range(len(seq) - 1):
-            counts[(seq[i], seq[i+1])] += 1
+            counts[(seq[i], seq[i+1])] += f
     return counts
 
-def _dec(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes]):
+def _dec_by(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes], delta: int):
     v = counts.get(pair)
     if v is None:
         return 
-    if v <= 1:
-        del counts[pair]
+    if v <= delta:
+        counts.pop(pair, None)
     else:
-        counts[pair] = v - 1
+        counts[pair] = v - delta
 
-def _inc(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes]):
-    counts[pair] = counts.get(pair, 0) + 1
+def _inc_by(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes], delta: int):
+    counts[pair] = counts.get(pair, 0) + delta
 
 def _merge_sequence_incremental(seq: List[bytes], a: bytes, b: bytes, new_tok: bytes, 
-                                pair_counts: Dict[Tuple[bytes, bytes], int]) -> None:
+                                pair_counts: Dict[Tuple[bytes, bytes], int], freq: int) -> None:
     i = 0
     while i < len(seq) - 1:
         if seq[i] == a and seq[i+1] == b:
             prev_tok = seq[i-1] if i - 1 >= 0 else None
             next_tok = seq[i+2] if i + 2 < len(seq) else None # token after b
             if prev_tok is not None:
-                _dec(pair_counts, (prev_tok, a))
-            _dec(pair_counts, (a, b))
+                _dec_by(pair_counts, (prev_tok, a), freq)
+            _dec_by(pair_counts, (a, b), freq)
             if next_tok is not None:
-                _dec(pair_counts, (b, next_tok))
+                _dec_by(pair_counts, (b, next_tok), freq)
             seq[i:i+2] = [new_tok]
             if prev_tok is not None:
-                _inc(pair_counts, (prev_tok, new_tok))
+                _inc_by(pair_counts, (prev_tok, new_tok), freq)
             if next_tok is not None:
-                _inc(pair_counts, (new_tok, next_tok))
+                _inc_by(pair_counts, (new_tok, next_tok), freq)
             i += 1 # advance past the merged token
         else:
             i += 1
@@ -181,7 +183,15 @@ def BPE_tokenizer_training(input_path: str, vocab_size: int, special_tokens: Lis
         next_id += 1
     
     sequences = _init_sequences_parallel(input_path, special_tokens, num_processes)
-    pair_counts = _count_all_pairs(sequences)
+    
+    # 
+    seq_freq_map = defaultdict(int)
+    for seq in sequences:
+        seq_freq_map[tuple(seq)] += 1
+    sequences = [list(t) for t in seq_freq_map.keys()]
+    freqs = list(seq_freq_map.values())
+
+    pair_counts = _count_all_pairs_weighted(sequences, freqs)
     
     while len(vocab) < vocab_size and pair_counts:
         # select the most frequent
@@ -194,8 +204,8 @@ def BPE_tokenizer_training(input_path: str, vocab_size: int, special_tokens: Lis
         next_id += 1
 
         # merge the (a, b) on all the sequences
-        for seq in sequences:
-            _merge_sequence_incremental(seq, a, b, new_token, pair_counts)
+        for seq, f in zip(sequences, freqs):
+            _merge_sequence_incremental(seq, a, b, new_token, pair_counts, f)
         
     return vocab, merges
 
