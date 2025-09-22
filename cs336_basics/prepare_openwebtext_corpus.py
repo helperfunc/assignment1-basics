@@ -162,4 +162,10 @@ def main():
 
 
 if __name__ == '__main__':
+    '''
+    python cs336_basics/prepare_openwebtext_corpus.py \
+    --input /path/to/OpenWebText/root_or_tar_folder \
+    --output /path/to/owt_corpus.txt \
+    --special "<|endoftext|>"
+    '''
     main()
