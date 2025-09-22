@@ -2,7 +2,7 @@ import regex as re
 from collections import defaultdict
 from typing import List, Dict, Tuple
 import os
-from typing import BinaryIO
+from typing import BinaryIO, Optional
 import multiprocessing as mp
 import json
 import base64
@@ -23,7 +23,8 @@ def find_chunk_boundaries(file, desired_num_chunks: int, split_special_token: by
     chunk_size = max(1, file_size // desired_num_chunks)
     boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
     boundaries[-1] = file_size
-    mini_chunk_size = 4096
+    # Use a larger mini-chunk to reduce syscall overhead while scanning for split token
+    mini_chunk_size = 1024 * 1024  # 1MB
     for bi in range(1, len(boundaries) - 1):
         initial = boundaries[bi]
         file.seek(initial)
@@ -50,17 +51,64 @@ def _process_file_chunk(args):
         text = text.replace('\r\n', '\n').replace('\r', '\n')
     return _init_sequences(text, special_tokens)
 
+def _choose_split_token(special_tokens: List[str]) -> Optional[str]:
+    if not special_tokens:
+        return None
+    if "<|endoftext|>" in special_tokens:
+        return "<|endoftext|>"
+    return special_tokens[0]
+
+def _stream_docs_from_file(input_path: str, split_special_token: str, bufsize: int = 1 << 20):
+    """Yield document strings by streaming the file and splitting on the given special token.
+
+    This avoids loading the entire corpus into memory at once. The split_special_token must
+    be present between documents (e.g., <|endoftext|>). Returns plain text docs (special
+    token is not yielded as part of the doc).
+    """
+    token_b = split_special_token.encode("utf-8")
+    with open(input_path, "rb") as f:
+        buf = b""
+        while True:
+            chunk = f.read(bufsize)
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                pos = buf.find(token_b)
+                if pos == -1:
+                    break
+                doc_bytes = buf[:pos]
+                buf = buf[pos + len(token_b):]
+                text = doc_bytes.decode("utf-8", errors="ignore")
+                if '\r' in text:
+                    text = text.replace('\r\n', '\n').replace('\r', '\n')
+                text = text.strip()
+                if text:
+                    yield text
+        # leftover as a final doc if any (when file doesn't end with the splitter)
+        if buf:
+            text = buf.decode("utf-8", errors="ignore")
+            if '\r' in text:
+                text = text.replace('\r\n', '\n').replace('\r', '\n')
+            text = text.strip()
+            if text:
+                yield text
+
 def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_processes: int) -> List[List[bytes]]:
+    # Single-process: stream documents if we have a known separator to avoid loading the whole file
     if num_processes <= 1:
-        with open(input_path, "r", encoding="utf-8") as f:
-            corpus = f.read()
-        return _init_sequences(corpus, special_tokens)
-    split_token = None
-    if special_tokens:
-        if "<|endoftext|>" in special_tokens:
-            split_token = "<|endoftext|>"
+        split_token = _choose_split_token(special_tokens)
+        if split_token is not None:
+            sequences: List[List[bytes]] = []
+            for doc in _stream_docs_from_file(input_path, split_token):
+                sequences.extend(_init_sequences(doc, special_tokens))
+            return sequences
         else:
-            split_token = special_tokens[0]
+            # Fallback to legacy behavior if no separator is known
+            with open(input_path, "r", encoding="utf-8") as f:
+                corpus = f.read()
+            return _init_sequences(corpus, special_tokens)
+    split_token = _choose_split_token(special_tokens)
     if split_token is None:
         return _init_sequences_parallel(input_path, special_tokens, 1)
     with open(input_path, "rb") as fb:
@@ -266,19 +314,27 @@ def train_bpe_expts_owt(input_path: str, vocab_size: int, special_tokens: List[s
     serialize_save_merges(merges, os.path.join(base_dir, 'expts_owt_merges'))
 
 
+# profiler = cProfile.Profile()
+# profiler.enable()
+# input_path = r"TinyStories/TinyStories-train.txt"
+# vocab_size = 10000
+# special_tokens = ["<|endoftext|>"]
+# train_bpe_tinystories(input_path, vocab_size, special_tokens)
+# profiler.disable()
+# profiler.dump_stats('train_bpe_profile.prof')
+# stats = pstats.Stats(profiler)
+# stats.sort_stats('cumulative')
+# stats.print_stats(30)
+
+
 profiler = cProfile.Profile()
 profiler.enable()
-input_path = r"TinyStories/TinyStories-train.txt"
-vocab_size = 10000
+input_path = r"openwebtext/owt_corpus.txt"
+vocab_size = 32000
 special_tokens = ["<|endoftext|>"]
-train_bpe_tinystories(input_path, vocab_size, special_tokens)
+train_bpe_expts_owt(input_path, vocab_size, special_tokens)
 profiler.disable()
 profiler.dump_stats('train_bpe_profile.prof')
 stats = pstats.Stats(profiler)
 stats.sort_stats('cumulative')
 stats.print_stats(30)
-
-# input_path = r"tests\fixtures\tinystories_sample.txt"
-# vocab_size = 32000
-# special_tokens = ["<|endoftext|>"]
-# train_bpe_expts_owt(input_path, vocab_size, special_tokens)
