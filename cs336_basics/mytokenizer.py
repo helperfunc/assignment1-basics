@@ -13,6 +13,18 @@ PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s
 TOKEN_RE = re.compile(PAT)
 SINGLE_BYTES = [bytes([i]) for i in range(256)]
 
+def _merge_tokens(seq: List[bytes], a: bytes, b: bytes, new_tok: bytes) -> List[bytes]:
+    out = []
+    i = 0
+    while i < len(seq):
+        if i + 1 < len(seq) and seq[i] == a and seq[i + 1] == b:
+            out.append(new_tok)
+            i += 2
+        else:
+            out.append(seq[i])
+            i += 1
+    return out
+
 def find_chunk_boundaries(file, desired_num_chunks: int, split_special_token: bytes) -> List[int]:
     assert isinstance(split_special_token, bytes)
     file.seek(0, os.SEEK_END)
@@ -280,6 +292,13 @@ def BPE_tokenizer_training(input_path: str, vocab_size: int, special_tokens: Lis
     sequences, freqs = _init_sequences_parallel(input_path, special_tokens, num_processes)
     
     pair_counts = _count_all_pairs_weighted(sequences, freqs)
+    pair_to_seqs: Dict[Tuple[bytes, bytes], set[int]] = defaultdict(set)
+    for wi, seq in enumerate(sequences):
+        if len(seq) < 2:
+            continue
+        # dedup per sequence to avoid bloating the postings list
+        for p in set(zip(seq, seq[1:])):
+            pair_to_seqs[p].add(wi)
     
     while len(vocab) < vocab_size and pair_counts:
         # select the most frequent
