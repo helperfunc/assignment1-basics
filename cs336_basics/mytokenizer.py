@@ -100,48 +100,72 @@ def _stream_docs_from_file(input_path: str, split_special_token: str, bufsize: i
             if text:
                 yield text
 
-def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_processes: int) -> List[List[bytes]]:
-    # Single-process: stream documents if we have a known separator to avoid loading the whole file
+def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_processes: int) -> Tuple[List[List[bytes]], List[int]]:
+    # Helper: turn a local_map (tuple(seq)->count) into (sequences, freqs)
+    def _finalize(merged_map: Dict[Tuple[bytes, ...], int]) -> Tuple[List[List[bytes]], List[int]]:
+        if not merged_map:
+            return [], []
+        sequences = [list(k) for k in merged_map.keys()]
+        freqs = list(merged_map.values())
+        return sequences, freqs
+
+    # Single-process: stream docs if we have a known separator to avoid loading the whole file
     if num_processes <= 1:
         split_token = _choose_split_token(special_tokens)
+        merged_map: Dict[Tuple[bytes, ...], int] = defaultdict(int)
+
         if split_token is not None:
-            sequences: List[List[bytes]] = []
             for doc in _stream_docs_from_file(input_path, split_token):
-                sequences.extend(_init_sequences(doc, special_tokens))
-            return sequences
+                # build sequences for this doc and fold into a local map to reduce Python overhead
+                local_map: Dict[Tuple[bytes, ...], int] = defaultdict(int)
+                for seq in _init_sequences(doc, special_tokens):
+                    if seq:
+                        local_map[tuple(seq)] += 1
+                for k, v in local_map.items():
+                    merged_map[k] += v
+            return _finalize(merged_map)
         else:
-            # Fallback to legacy behavior if no separator is known
+            # Fallback when no separator is known: read whole file once
             with open(input_path, "r", encoding="utf-8") as f:
                 corpus = f.read()
-            return _init_sequences(corpus, special_tokens)
+            local_map: Dict[Tuple[bytes, ...], int] = defaultdict(int)
+            for seq in _init_sequences(corpus, special_tokens):
+                if seq:
+                    local_map[tuple(seq)] += 1
+            for k, v in local_map.items():
+                merged_map[k] += v
+            return _finalize(merged_map)
+
+    # Multi-process: chunk on split token; if no split token, fall back to single-process
     split_token = _choose_split_token(special_tokens)
     if split_token is None:
         return _init_sequences_parallel(input_path, special_tokens, 1)
+
     with open(input_path, "rb") as fb:
         boundaries = find_chunk_boundaries(fb, num_processes, split_token.encode("utf-8"))
+
     if len(boundaries) <= 2:
         return _init_sequences_parallel(input_path, special_tokens, 1)
-    tasks = [(start, end, input_path, special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:]) if end > start]
-    # Cap workers to a reasonable number to reduce IPC pressure
+
+    tasks = [(start, end, input_path, special_tokens)
+             for start, end in zip(boundaries[:-1], boundaries[1:]) if end > start]
+
     worker_count = min(num_processes, len(tasks), 16)
+    merged_map: Dict[Tuple[bytes, ...], int] = defaultdict(int)
     try:
         with mp.Pool(processes=worker_count, maxtasksperchild=64) as pool:
-            # Incremental reduction to avoid holding all results at once
-            merged_map: Dict[Tuple[bytes, ...], int] = defaultdict(int)
             for loc in pool.imap_unordered(_process_file_chunk, tasks, chunksize=1):
                 for k, v in loc.items():
                     merged_map[k] += v
     except (BrokenPipeError, OSError):
-        # Fallback: single-process reduction to complete gracefully
-        merged_map = defaultdict(int)
-        for start, end, _, _ in tasks:
-            loc = _process_file_chunk((start, end, input_path, special_tokens))
+        # Fallback sequential reduction
+        for t in tasks:
+            loc = _process_file_chunk(t)
             for k, v in loc.items():
                 merged_map[k] += v
-    # Reconstruct unique sequences; keep training's later frequency recompute unchanged
-    sequences: List[List[bytes]] = [list(k) for k in merged_map.keys()]
-    freqs: List[int] = list(merged_map.values())
-    return sequences, freqs
+
+    return _finalize(merged_map)
+
 
 def _pre_tokenize(text: str):
     for m in TOKEN_RE.finditer(text):
