@@ -262,18 +262,20 @@ def BPE_tokenizer_training(input_path: str, vocab_size: int, special_tokens: Lis
     base_size = len(special_tokens) + 256
     if vocab_size < base_size:
         raise ValueError(f"vocab_size {vocab_size} < minimum required {base_size} (special tokens + 256 byte symbols)")
-    vocab = {} # id:bytes
     merges = []
-    # vocabulary initialization
+    vocab = {} # id:bytes
     next_id = 0
-    # special tokens
-    for s in special_tokens:
-        vocab[next_id] = s.encode('utf-8')
-        next_id += 1
-    # 256 byte
+
+    # 256 byte tokens first
     for i in range(256):
         vocab[next_id] = bytes([i])
         next_id += 1
+
+    # Then special tokens (sorted by length so the splitter is unambiguous)
+    for s in sorted(special_tokens, key=len, reverse=True):
+        vocab[next_id] = s.encode('utf-8')
+        next_id += 1
+
     
     sequences, freqs = _init_sequences_parallel(input_path, special_tokens, num_processes)
     
