@@ -82,13 +82,7 @@ def _process_file_chunk(args):
     # Normalize Windows newlines so parallel path matches serial path snapshot expectations
     if '\r' in text:
         text = text.replace('\r\n', '\n').replace('\r', '\n')
-    sequences = _init_sequences(text, special_tokens)
-    # Deduplicate into a local frequency map to shrink IPC payload
-    local_map: Dict[Tuple[bytes, ...], int] = defaultdict(int)
-    for seq in sequences:
-        if seq:
-            local_map[tuple(seq)] += 1
-    return local_map
+    return _init_sequences(text, special_tokens)
 
 def _choose_split_token(special_tokens: List[str]) -> Optional[str]:
     if not special_tokens:
@@ -167,31 +161,13 @@ def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_pro
     if len(boundaries) <= 2:
         # Fall back to single-process construction to stay correct
         return _init_sequences_parallel(input_path, special_tokens, 1)
-
-    tasks = [(start, end, input_path, special_tokens)
-             for start, end in zip(boundaries[:-1], boundaries[1:])
-             if end > start]
-
-    # Cap worker count to reduce IPC overhead
-    worker_count = min(num_processes, len(tasks), 16)
-
-    merged_map: Dict[Tuple[bytes, ...], int] = defaultdict(int)
-    try:
-        with mp.Pool(processes=worker_count, maxtasksperchild=64) as pool:
-            # chunksize is small because tasks are chunky already
-            for loc in pool.imap_unordered(_process_file_chunk, tasks, chunksize=1):
-                for k, v in loc.items():
-                    merged_map[k] += v
-    except (BrokenPipeError, OSError):
-        # Graceful fallback
-        for t in tasks:
-            loc = _process_file_chunk(t)
-            for k, v in loc.items():
-                merged_map[k] += v
-
-    sequences = [list(k) for k in merged_map.keys()]
-    freqs     = list(merged_map.values())
-    return sequences, freqs
+    tasks = [(start, end, input_path, special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:]) if end > start]
+    with mp.Pool(processes=min(num_processes, len(tasks))) as pool:
+        parts = pool.map(_process_file_chunk, tasks)
+    out = []
+    for p in parts:
+        out.extend(p)
+    return out
 
 
 def _pre_tokenize(text: str):
@@ -309,15 +285,16 @@ def BPE_tokenizer_training(input_path: str, vocab_size: int, special_tokens: Lis
     for i in range(256):
         vocab[next_id] = bytes([i])
         next_id += 1
-
-    # Then special tokens (sorted by length so the splitter is unambiguous)
-    for s in sorted(special_tokens, key=len, reverse=True):
-        vocab[next_id] = s.encode('utf-8')
-        next_id += 1
-
     
-    sequences, freqs = _init_sequences_parallel(input_path, special_tokens, num_processes)
+    sequences = _init_sequences_parallel(input_path, special_tokens, num_processes)
     
+    # 
+    seq_freq_map = defaultdict(int)
+    for seq in sequences:
+        seq_freq_map[tuple(seq)] += 1
+    sequences = [list(t) for t in seq_freq_map.keys()]
+    freqs = list(seq_freq_map.values())
+
     pair_counts = _count_all_pairs_weighted(sequences, freqs)
     pair_to_seqs: Dict[Tuple[bytes, bytes], set[int]] = defaultdict(set)
     for wi, seq in enumerate(sequences):
@@ -393,33 +370,27 @@ def train_bpe_expts_owt(input_path: str, vocab_size: int, special_tokens: List[s
     serialize_save_merges(merges, os.path.join(base_dir, 'expts_owt_merges'))
 
 
-if __name__ == "__main__":
-    # profiler = cProfile.Profile()
-    # profiler.enable()
-    # input_path = r"TinyStories/TinyStories-train.txt"
-    # vocab_size = 10000
-    # special_tokens = ["<|endoftext|>"]
-    # # Allow overriding num processes via env; default 8
-    # try:
-    #     env_proc = int(os.environ.get("BPE_PROCESSES", "8"))
-    # except Exception:
-    #     env_proc = 8
-    # train_bpe_tinystories(input_path, vocab_size, special_tokens, num_processes=env_proc)
-    # profiler.disable()
-    # profiler.dump_stats('train_bpe_profile.prof')
-    # stats = pstats.Stats(profiler)
-    # stats.sort_stats('cumulative')
-    # stats.print_stats(20)
+# profiler = cProfile.Profile()
+# profiler.enable()
+# input_path = r"TinyStories/TinyStories-train.txt"
+# vocab_size = 10000
+# special_tokens = ["<|endoftext|>"]
+# train_bpe_tinystories(input_path, vocab_size, special_tokens)
+# profiler.disable()
+# profiler.dump_stats('train_bpe_profile.prof')
+# stats = pstats.Stats(profiler)
+# stats.sort_stats('cumulative')
+# stats.print_stats(30)
 
 
-    profiler = cProfile.Profile()
-    profiler.enable()
-    input_path = r"openwebtext/owt_corpus.txt"
-    vocab_size = 32000
-    special_tokens = ["<|endoftext|>"]
-    train_bpe_expts_owt(input_path, vocab_size, special_tokens, num_processes=48)
-    profiler.disable()
-    profiler.dump_stats('train_bpe_expts_owt_profile.prof')
-    stats = pstats.Stats(profiler)
-    stats.sort_stats('cumulative')
-    stats.print_stats(20)
+profiler = cProfile.Profile()
+profiler.enable()
+input_path = r"openwebtext/owt_corpus.txt"
+vocab_size = 32000
+special_tokens = ["<|endoftext|>"]
+train_bpe_expts_owt(input_path, vocab_size, special_tokens)
+profiler.disable()
+profiler.dump_stats('train_bpe_profile.prof')
+stats = pstats.Stats(profiler)
+stats.sort_stats('cumulative')
+stats.print_stats(30)
