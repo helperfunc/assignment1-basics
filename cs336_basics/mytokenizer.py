@@ -25,6 +25,27 @@ def _merge_tokens(seq: List[bytes], a: bytes, b: bytes, new_tok: bytes) -> List[
             i += 1
     return out
 
+
+def _heap_build_from_counts(pair_counts):
+    heap = [(-c, a, b) for (a, b), c in pair_counts.items()]
+    heapq.heapify(heap)
+    return heap
+
+def _heap_push(heap, pair: Tuple[bytes, bytes], new_val: int):
+    if new_val > 0:
+        a, b = pair
+        heapq.heappush(heap, (-new_val, a, b))
+
+def _heap_pop_best(heap, pair_counts):
+    # lazy delete: pop until top matches current dict value
+    while heap:
+        negc, a, b = heapq.heappop(heap)
+        c = -negc
+        cur = pair_counts.get((a, b), 0)
+        if cur == c and cur > 0:
+            return (a, b), c
+    return None, 0
+
 def find_chunk_boundaries(file, desired_num_chunks: int, split_special_token: bytes) -> List[int]:
     assert isinstance(split_special_token, bytes)
     file.seek(0, os.SEEK_END)
@@ -223,17 +244,23 @@ def _count_all_pairs_weighted(sequences: List[List[bytes]], freqs: List[int]) ->
             counts[(seq[i], seq[i+1])] += f
     return counts
 
-def _dec_by(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes], delta: int):
+def _dec_by(counts, pair, delta, heap=None):
     v = counts.get(pair)
     if v is None:
-        return 
-    if v <= delta:
+        return
+    nv = v - delta
+    if nv <= 0:
         counts.pop(pair, None)
     else:
-        counts[pair] = v - delta
+        counts[pair] = nv
+        if heap is not None:
+            _heap_push(heap, pair, nv)
 
-def _inc_by(counts: Dict[Tuple[bytes, bytes], int], pair: Tuple[bytes, bytes], delta: int):
-    counts[pair] = counts.get(pair, 0) + delta
+def _inc_by(counts, pair, delta, heap=None):
+    nv = counts.get(pair, 0) + delta
+    counts[pair] = nv
+    if heap is not None:
+        _heap_push(heap, pair, nv)
 
 def _merge_sequence_incremental(seq: List[bytes], a: bytes, b: bytes, new_tok: bytes, 
                                 pair_counts: Dict[Tuple[bytes, bytes], int], freq: int) -> None:
