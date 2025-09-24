@@ -169,7 +169,6 @@ def _init_sequences_parallel(input_path: str, special_tokens: List[str], num_pro
         out.extend(p)
     return out
 
-
 def _pre_tokenize(text: str):
     for m in TOKEN_RE.finditer(text):
         yield m.group()
