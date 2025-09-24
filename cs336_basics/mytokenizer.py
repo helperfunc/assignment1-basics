@@ -160,26 +160,26 @@ def _merge_word_all(word: List[int], a: int, b: int, new_id: int) -> List[int]:
             i += 1
     return out
 
+
 def BPE_tokenizer_training(
     input_path: str,
     vocab_size: int,
     special_tokens: List[str],
     num_processes: int = 8,
-):
-    base_size = len(special_tokens) + 256
+) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
+    base_size = 256 + len(special_tokens)
     if vocab_size < base_size:
         raise ValueError(
-            f"vocab_size {vocab_size} < minimum required {base_size} (special tokens + 256 byte symbols)"
+            f"vocab_size {vocab_size} < minimum required {base_size} (256 bytes + {len(special_tokens)} specials)"
         )
 
-    # Output vocab (token_id -> bytes)
-    vocab: Dict[int, bytes] = {}
-    next_id = 0
+    # ---- CORRECT ID SPACE ----
+    # IDs 0..255 == raw bytes 0..255
+    vocab: Dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    next_id = 256
+    # specials come AFTER the 256 bytes (so they don't clash with word byte IDs)
     for s in special_tokens:
         vocab[next_id] = s.encode("utf-8")
-        next_id += 1
-    for i in range(256):
-        vocab[next_id] = bytes([i])
         next_id += 1
 
     # words: list[list[int]] (byte ids), freqs aligned
@@ -192,54 +192,66 @@ def BPE_tokenizer_training(
     pair_counts: Dict[Tuple[int, int], int] = defaultdict(int)
     pair_to_words: Dict[Tuple[int, int], set] = defaultdict(set)
     for wi, (w, f) in enumerate(zip(words, freqs)):
-        for p in _pairs_of(w):
+        if len(w) < 2:
+            continue
+        for p in zip(w, w[1:]):
             pair_counts[p] += f
             pair_to_words[p].add(wi)
 
-    # training-space mapping: symbol id -> bytes
-    sym_bytes: Dict[int, bytes] = {i: bytes([i]) for i in range(256)}
-
     merges: List[Tuple[bytes, bytes]] = []
 
+    # ---- EXACT reference selection: max by (count, (vocab[a], vocab[b])) ----
     while len(vocab) < vocab_size and pair_counts:
-        # >>> FIXED TIE-BREAKER: compare by BYTES, not by symbol ids <<<
-        best_pair, best_count = max(
-            pair_counts.items(),
-            key=lambda kv: (kv[1], sym_bytes[kv[0][0]], sym_bytes[kv[0][1]]),
+        best_pair = max(
+            pair_counts,
+            key=lambda p: (pair_counts[p], (vocab[p[0]], vocab[p[1]])),
         )
+        best_count = pair_counts[best_pair]
         if best_count < 1:
             break
 
         a, b = best_pair
-        new_sym = max(sym_bytes.keys()) + 1
-        new_bytes = sym_bytes[a] + sym_bytes[b]
-        sym_bytes[new_sym] = new_bytes
-
-        merges.append((sym_bytes[a], sym_bytes[b]))
-        vocab[next_id] = new_bytes
+        new_index = next_id
         next_id += 1
 
-        affected = list(pair_to_words.get((a, b), ()))
+        # record merge in BYTES and register new token bytes
+        merges.append((vocab[a], vocab[b]))
+        vocab[new_index] = vocab[a] + vocab[b]
+
+        # only words that had (a,b)
+        affected = list(pair_to_words.get(best_pair, ()))
+
         for wi in affected:
             w = words[wi]
             f = freqs[wi]
 
-            old_pairs = _pairs_of(w)
-            for p in old_pairs:
-                pair_counts[p] -= f
-                if pair_counts[p] <= 0:
-                    pair_counts.pop(p, None)
-                s = pair_to_words.get(p)
-                if s is not None:
-                    s.discard(wi)
+            # remove old pairs
+            if len(w) >= 2:
+                old_pairs = list(zip(w, w[1:]))
+                for p in old_pairs:
+                    cur = pair_counts.get(p)
+                    if cur is not None:
+                        cur -= f
+                        if cur <= 0:
+                            pair_counts.pop(p, None)
+                        else:
+                            pair_counts[p] = cur
+                    s = pair_to_words.get(p)
+                    if s is not None:
+                        s.discard(wi)
 
-            w[:] = _merge_word_all(w, a, b, new_sym)
+            # merge all (a,b) -> new_index
+            w[:] = _merge_word_all(w, a, b, new_index)
 
-            new_pairs = _pairs_of(w)
-            for p in new_pairs:
-                pair_counts[p] = pair_counts.get(p, 0) + f
-                pair_to_words[p].add(wi)
+            # add new pairs
+            if len(w) >= 2:
+                new_pairs = list(zip(w, w[1:]))
+                for p in new_pairs:
+                    pair_counts[p] = pair_counts.get(p, 0) + f
+                    pair_to_words[p].add(wi)
 
-        pair_to_words.pop((a, b), None)
+        # (a,b) gone
+        pair_to_words.pop(best_pair, None)
 
     return vocab, merges
+
