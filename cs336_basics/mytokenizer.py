@@ -3,7 +3,7 @@ import regex as re
 import multiprocessing as mp
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, BinaryIO
-
+import heapq
 # ----------------------------
 # Public helpers expected elsewhere
 # ----------------------------
@@ -160,98 +160,151 @@ def _merge_word_all(word: List[int], a: int, b: int, new_id: int) -> List[int]:
             i += 1
     return out
 
-
 def BPE_tokenizer_training(
     input_path: str,
     vocab_size: int,
     special_tokens: List[str],
     num_processes: int = 8,
 ) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
+    # ---- sanity on size ----
     base_size = 256 + len(special_tokens)
     if vocab_size < base_size:
         raise ValueError(
             f"vocab_size {vocab_size} < minimum required {base_size} (256 bytes + {len(special_tokens)} specials)"
         )
 
-    # ---- CORRECT ID SPACE ----
-    # IDs 0..255 == raw bytes 0..255
+    # ---- initialize vocab: raw bytes then specials ----
     vocab: Dict[int, bytes] = {i: bytes([i]) for i in range(256)}
     next_id = 256
-    # specials come AFTER the 256 bytes (so they don't clash with word byte IDs)
     for s in special_tokens:
         vocab[next_id] = s.encode("utf-8")
         next_id += 1
 
-    # words: list[list[int]] (byte ids), freqs aligned
+    # ---- collect word frequencies (byte-ids per word) ----
     word_freqs = _collect_word_freqs_parallel(input_path, special_tokens, num_processes)
     words: List[List[int]] = [list(w) for w in word_freqs.keys()]
     freqs: List[int] = [word_freqs[w] for w in word_freqs.keys()]
     del word_freqs
 
-    # initial counts + inverted index
-    pair_counts: Dict[Tuple[int, int], int] = defaultdict(int)
-    pair_to_words: Dict[Tuple[int, int], set] = defaultdict(set)
+    # ---- initial pair counts + inverted index (pair -> set(word_idx)) ----
+    Pair = Tuple[int, int]
+    pair_counts: Dict[Pair, int] = defaultdict(int)
+    pair_to_words: Dict[Pair, Set[int]] = defaultdict(set)
+
     for wi, (w, f) in enumerate(zip(words, freqs)):
         if len(w) < 2:
             continue
-        for p in zip(w, w[1:]):
+        for i in range(len(w) - 1):
+            p = (w[i], w[i + 1])
             pair_counts[p] += f
             pair_to_words[p].add(wi)
 
     merges: List[Tuple[bytes, bytes]] = []
 
-    # ---- EXACT reference selection: max by (count, (vocab[a], vocab[b])) ----
-    while len(vocab) < vocab_size and pair_counts:
-        best_pair = max(
-            pair_counts,
-            key=lambda p: (pair_counts[p], (vocab[p[0]], vocab[p[1]])),
-        )
-        best_count = pair_counts[best_pair]
+    # ---- buckets: count -> set of pairs, and a max-heap over counts ----
+    buckets: Dict[int, Set[Pair]] = defaultdict(set)
+    for p, c in pair_counts.items():
+        if c > 0:
+            buckets[c].add(p)
+
+    # max-heap of counts (store negative for heapq)
+    count_heap: List[int] = []
+    for c in buckets:
+        if buckets[c]:
+            heapq.heappush(count_heap, -c)
+
+    def add_to_bucket(p: Pair, new_c: int):
+        if new_c > 0:
+            buckets[new_c].add(p)
+            heapq.heappush(count_heap, -new_c)
+
+    def remove_from_bucket(p: Pair, old_c: int):
+        if old_c > 0:
+            bs = buckets.get(old_c)
+            if bs is not None:
+                bs.discard(p)
+
+    # ---- main training loop ----
+    while len(vocab) < vocab_size and pair_counts and count_heap:
+        # find the current non-empty max count
+        while count_heap and (not buckets.get(-count_heap[0], None)):
+            heapq.heappop(count_heap)
+        if not count_heap:
+            break
+
+        best_count = -count_heap[0]
         if best_count < 1:
             break
+
+        # exact GPT-2 tie-break: lexicographically largest (vocab[a], vocab[b]) among pairs with best_count
+        # NOTE: evaluate only the bucket at best_count (usually small), not the whole dict
+        candidates = buckets[best_count]
+        # It is possible that concurrent updates left stale pairs here with different counts;
+        # filter to ensure they still have best_count.
+        cand_list = [p for p in candidates if pair_counts.get(p, 0) == best_count]
+        if not cand_list:
+            # bucket was effectively stale; pop and continue
+            heapq.heappop(count_heap)
+            continue
+
+        best_pair = max(cand_list, key=lambda p: (vocab[p[0]], vocab[p[1]]))
 
         a, b = best_pair
         new_index = next_id
         next_id += 1
 
-        # record merge in BYTES and register new token bytes
+        # record merge (in bytes) & register new token
         merges.append((vocab[a], vocab[b]))
         vocab[new_index] = vocab[a] + vocab[b]
 
-        # only words that had (a,b)
+        # We'll remove best_pair from its bucket at the end of processing all affected words
+        # (since its count will go to zero)
         affected = list(pair_to_words.get(best_pair, ()))
 
         for wi in affected:
             w = words[wi]
             f = freqs[wi]
+            if len(w) < 2:
+                continue
 
-            # remove old pairs
-            if len(w) >= 2:
-                old_pairs = list(zip(w, w[1:]))
-                for p in old_pairs:
-                    cur = pair_counts.get(p)
-                    if cur is not None:
-                        cur -= f
-                        if cur <= 0:
-                            pair_counts.pop(p, None)
-                        else:
-                            pair_counts[p] = cur
-                    s = pair_to_words.get(p)
-                    if s is not None:
-                        s.discard(wi)
+            # subtract old pairs along the whole word
+            # and update both pair_counts and buckets
+            prev = w[0]
+            for i in range(len(w) - 1):
+                nxt = w[i + 1]
+                p = (prev, nxt)
+                old_c = pair_counts.get(p)
+                if old_c is not None:
+                    new_c = old_c - f
+                    if new_c <= 0:
+                        pair_counts.pop(p, None)
+                    else:
+                        pair_counts[p] = new_c
+                    remove_from_bucket(p, old_c)
+                    add_to_bucket(p, new_c if new_c and new_c > 0 else 0)
+                s = pair_to_words.get(p)
+                if s is not None:
+                    s.discard(wi)
+                prev = nxt  # move forward
 
-            # merge all (a,b) -> new_index
+            # perform the merge (a,b) -> new_index
             w[:] = _merge_word_all(w, a, b, new_index)
 
-            # add new pairs
+            # add new pairs along the whole word
             if len(w) >= 2:
-                new_pairs = list(zip(w, w[1:]))
-                for p in new_pairs:
-                    pair_counts[p] = pair_counts.get(p, 0) + f
+                prev = w[0]
+                for i in range(len(w) - 1):
+                    nxt = w[i + 1]
+                    p = (prev, nxt)
+                    new_c = pair_counts.get(p, 0) + f
+                    pair_counts[p] = new_c
                     pair_to_words[p].add(wi)
+                    add_to_bucket(p, new_c)
+                    prev = nxt
 
-        # (a,b) gone
+        # (a,b) should be gone now
         pair_to_words.pop(best_pair, None)
+        # ensure it's removed from its bucket
+        remove_from_bucket(best_pair, best_count)
 
     return vocab, merges
-
