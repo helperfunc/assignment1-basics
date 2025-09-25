@@ -57,3 +57,32 @@ print(decode_bytes(b'\xc0\xaf'))
 ```
 > To encode `/` (U+002F = 0b00101111, 00000000 00101111). In UTF-8, the format 110xxxxx 10xxxxxx is used for multi-byte character, prevent confusion with single-byte characters. When we split the bits 00000000 00101111 to fit the two-byte UTF-8, we have 11000000 10101111 (`b'\xc0\xaf'`), which is a overlong encoding of `/`. Decoding `b'\xc0\xaf'` will get `UnicodeDecodeError`.
 
+```
+$ python cs336_basics/train_corpus_tokenizer.py 
+         28282355 function calls (28282219 primitive calls) in 71.357 seconds                                             
+
+   Ordered by: cumulative time
+   List reduced from 479 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.084    0.084   71.357   71.357 /chronos_data/huixu/assignment1-basics/cs336_basics/train_corpus_tokenizer.py:37(train_bpe_tinystories)
+        1    5.119    5.119   71.213   71.213 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:202(BPE_tokenizer_training)
+        1    0.379    0.379   56.644   56.644 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:110(_collect_word_freqs_parallel)
+       17    0.000    0.000   56.143    3.303 /chronos_data/conda_envs/irt/lib/python3.10/threading.py:288(wait)
+       17    0.000    0.000   56.143    3.303 /chronos_data/conda_envs/irt/lib/python3.10/multiprocessing/pool.py:853(next)
+       71   56.143    0.791   56.143    0.791 {method 'acquire' of '_thread.lock' objects}
+     9743    0.058    0.000    2.163    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1402(set_postfix)
+     9871    0.020    0.000    2.077    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1325(refresh)
+     9873    0.022    0.000    2.018    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1464(display)
+  1180814    1.397    0.000    1.867    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:255(add_to_bucket)
+     9871    0.030    0.000    1.359    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1150(__str__)
+    29615    0.023    0.000    1.332    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:378(disp_len)
+    29615    0.021    0.000    1.291    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:374(_text_width)
+     9871    0.206    0.000    1.272    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:464(format_meter)
+    29615    0.321    0.000    1.270    0.000 {built-in method builtins.sum}
+   924429    1.067    0.000    1.067    0.000 {built-in method _heapq.heappop}
+   317920    0.806    0.000    1.047    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:187(_merge_word_all_with_positions)
+  3168825    0.666    0.000    0.948    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:375(<genexpr>)
+  4952920    0.896    0.000    0.896    0.000 {method 'get' of 'dict' objects}
+   508353    0.530    0.000    0.771    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:285(<listcomp>)
+```

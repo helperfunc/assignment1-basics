@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, BinaryIO
 import heapq
 import mmap
+from tqdm import tqdm
 
 # ----------------------------
 # Public helpers expected elsewhere
@@ -127,18 +128,26 @@ def _collect_word_freqs_parallel(
 
     wf = defaultdict(int)
     worker_count = min(max(1, num_processes), len(tasks), 16)
+
+    pbar = tqdm(total=len(tasks), desc="Counting chunks", unit="chunk", mininterval=0.1, leave=False)
     try:
-        with mp.Pool(processes=worker_count, maxtasksperchild=64) as pool:
-            chunksize = max(1, len(tasks) // (worker_count * 4))
-            for local in pool.imap_unordered(_wordcount_worker, tasks, chunksize=chunksize):
+        try:
+            with mp.Pool(processes=worker_count, maxtasksperchild=64) as pool:
+                chunksize = max(1, len(tasks) // (worker_count * 4))
+                for local in pool.imap_unordered(_wordcount_worker, tasks, chunksize=chunksize):
+                    for k, v in local.items():
+                        wf[k] += v
+                    pbar.update(1)
+        except (BrokenPipeError, OSError):
+            # 顺序回退路径也给进度条
+            for t in tasks:
+                local = _wordcount_worker(t)
                 for k, v in local.items():
                     wf[k] += v
+                pbar.update(1)
+    finally:
+        pbar.close()
 
-    except (BrokenPipeError, OSError):
-        for t in tasks:
-            local = _wordcount_worker(t)
-            for k, v in local.items():
-                wf[k] += v
     return wf
 
 # ----------------------------
@@ -254,101 +263,103 @@ def BPE_tokenizer_training(
             if bs is not None:
                 bs.discard(p)
 
-    # ---- main training loop ----
-    while len(vocab) < vocab_size and pair_counts and count_heap:
-        # find the current non-empty max count
-        while count_heap and (not buckets.get(-count_heap[0], None)):
-            heapq.heappop(count_heap)
-        if not count_heap:
-            break
+    # ---- progress bar setup ----
+    merges_target = vocab_size - len(vocab)
+    pbar = tqdm(total=max(0, merges_target), desc="BPE merges", unit="merge", mininterval=0.1, leave=False)
 
-        best_count = -count_heap[0]
-        if best_count < 1:
-            break
+    try:
+        # ---- main training loop ----
+        while len(vocab) < vocab_size and pair_counts and count_heap:
+            # find the current non-empty max count
+            while count_heap and (not buckets.get(-count_heap[0], None)):
+                heapq.heappop(count_heap)
+            if not count_heap:
+                break
 
-        # exact GPT-2 tie-break: lexicographically largest (vocab[a], vocab[b]) among pairs with best_count
-        # NOTE: evaluate only the bucket at best_count (usually small), not the whole dict
-        candidates = buckets[best_count]
-        # It is possible that concurrent updates left stale pairs here with different counts;
-        # filter to ensure they still have best_count.
-        cand_list = [p for p in candidates if pair_counts.get(p, 0) == best_count]
-        if not cand_list:
-            # bucket was effectively stale; pop and continue
-            heapq.heappop(count_heap)
-            continue
+            best_count = -count_heap[0]
+            if best_count < 1:
+                break
 
-        best_pair = max(cand_list, key=lambda p: (vocab[p[0]], vocab[p[1]]))
-
-        a, b = best_pair
-        new_index = next_id
-        next_id += 1
-
-        # record merge (in bytes) & register new token
-        merges.append((vocab[a], vocab[b]))
-        vocab[new_index] = vocab[a] + vocab[b]
-
-        # We'll remove best_pair from its bucket at the end of processing all affected words
-        # (since its count will go to zero)
-                # words affected by (a,b)
-        affected = list(pair_to_words.get(best_pair, ()))
-
-        for wi in affected:
-            w = words[wi]
-            f = freqs[wi]
-            if len(w) < 2:
+            # exact GPT-2 tie-break within the top-count bucket
+            candidates = buckets[best_count]
+            cand_list = [p for p in candidates if pair_counts.get(p, 0) == best_count]
+            if not cand_list:
+                heapq.heappop(count_heap)
                 continue
 
-            # 1) find merge positions; if none, skip (pair_to_words can be over-inclusive)
-            pos = _merge_positions_nonoverlap(w, a, b)
-            if not pos:
-                continue
+            best_pair = max(cand_list, key=lambda p: (vocab[p[0]], vocab[p[1]]))
 
-            # 2) decrement ONLY pairs in neighborhoods around each match
-            #    affected starts in the OLD word: {s-1, s, s+1}
-            old_aff_starts = set()
-            for s in pos:
-                if s - 1 >= 0: old_aff_starts.add(s - 1)
-                old_aff_starts.add(s)
-                if s + 1 < len(w) - 1: old_aff_starts.add(s + 1)
+            a, b = best_pair
+            new_index = next_id
+            next_id += 1
 
-            for i0 in old_aff_starts:
-                if 0 <= i0 < len(w) - 1:
-                    p = (w[i0], w[i0 + 1])
-                    old_c = pair_counts.get(p)
-                    if old_c is not None:
-                        new_c = old_c - f
-                        if new_c <= 0:
-                            pair_counts.pop(p, None)
-                        else:
-                            pair_counts[p] = new_c
-                        # update buckets (we don't need exact pair_to_words cleanup here)
-                        remove_from_bucket(p, old_c)
-                        if new_c and new_c > 0:
-                            add_to_bucket(p, new_c)
+            # record merge (in bytes) & register new token
+            merges.append((vocab[a], vocab[b]))
+            vocab[new_index] = vocab[a] + vocab[b]
 
-            # 3) perform the merge and collect where new_id was inserted
-            new_w, new_pos = _merge_word_all_with_positions(w, a, b, new_index)
+            # ✅ update progress after a successful merge
+            pbar.update(1)
+            pbar.set_postfix(top_count=best_count)
 
-            # 4) increment ONLY pairs in neighborhoods around each insertion
-            #    affected starts in the NEW word: {j-1, j}
-            new_aff_starts = set()
-            for j in new_pos:
-                if j - 1 >= 0: new_aff_starts.add(j - 1)
-                if j < len(new_w) - 1: new_aff_starts.add(j)
+            # words affected by (a,b)
+            affected = list(pair_to_words.get(best_pair, ()))
 
-            for i1 in new_aff_starts:
-                if 0 <= i1 < len(new_w) - 1:
-                    p = (new_w[i1], new_w[i1 + 1])
-                    new_c = pair_counts.get(p, 0) + f
-                    pair_counts[p] = new_c
-                    pair_to_words[p].add(wi)  # over-inclusive is OK
-                    add_to_bucket(p, new_c)
+            for wi in affected:
+                w = words[wi]
+                f = freqs[wi]
+                if len(w) < 2:
+                    continue
 
-            # 5) commit the new word
-            w[:] = new_w
+                # 1) find merge positions; if none, skip
+                pos = _merge_positions_nonoverlap(w, a, b)
+                if not pos:
+                    continue
 
-        # (a,b) should be gone now
-        pair_to_words.pop(best_pair, None)
-        remove_from_bucket(best_pair, best_count)
+                # 2) decrement ONLY pairs in neighborhoods around each match
+                old_aff_starts = set()
+                for s in pos:
+                    if s - 1 >= 0: old_aff_starts.add(s - 1)
+                    old_aff_starts.add(s)
+                    if s + 1 < len(w) - 1: old_aff_starts.add(s + 1)
+
+                for i0 in old_aff_starts:
+                    if 0 <= i0 < len(w) - 1:
+                        p = (w[i0], w[i0 + 1])
+                        old_c = pair_counts.get(p)
+                        if old_c is not None:
+                            new_c = old_c - f
+                            if new_c <= 0:
+                                pair_counts.pop(p, None)
+                            else:
+                                pair_counts[p] = new_c
+                            remove_from_bucket(p, old_c)
+                            if new_c and new_c > 0:
+                                add_to_bucket(p, new_c)
+
+                # 3) merge and collect where new_id was inserted
+                new_w, new_pos = _merge_word_all_with_positions(w, a, b, new_index)
+
+                # 4) increment ONLY pairs in neighborhoods around each insertion
+                new_aff_starts = set()
+                for j in new_pos:
+                    if j - 1 >= 0: new_aff_starts.add(j - 1)
+                    if j < len(new_w) - 1: new_aff_starts.add(j)
+
+                for i1 in new_aff_starts:
+                    if 0 <= i1 < len(new_w) - 1:
+                        p = (new_w[i1], new_w[i1 + 1])
+                        new_c = pair_counts.get(p, 0) + f
+                        pair_counts[p] = new_c
+                        pair_to_words[p].add(wi)  # over-inclusive is OK
+                        add_to_bucket(p, new_c)
+
+                # 5) commit the new word
+                w[:] = new_w
+
+            # (a,b) done
+            pair_to_words.pop(best_pair, None)
+            remove_from_bucket(best_pair, best_count)
+    finally:
+        pbar.close()
 
     return vocab, merges
