@@ -4,6 +4,8 @@ import multiprocessing as mp
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, BinaryIO
 import heapq
+import mmap
+
 # ----------------------------
 # Public helpers expected elsewhere
 # ----------------------------
@@ -84,9 +86,8 @@ def _pre_tokenize_into_word_byte_ids(s: str) -> List[List[int]]:
 
 def _read_chunk(input_path: str, start: int, end: int) -> str:
     with open(input_path, "rb") as f:
-        f.seek(start)
-        data = f.read(end - start)
-    # normalize newlines for deterministic results
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            data = mm[start:end]
     t = data.decode("utf-8", errors="ignore")
     if "\r" in t:
         t = t.replace("\r\n", "\n").replace("\r", "\n")
@@ -128,9 +129,11 @@ def _collect_word_freqs_parallel(
     worker_count = min(max(1, num_processes), len(tasks), 16)
     try:
         with mp.Pool(processes=worker_count, maxtasksperchild=64) as pool:
-            for local in pool.imap_unordered(_wordcount_worker, tasks, chunksize=1):
+            chunksize = max(1, len(tasks) // (worker_count * 4))
+            for local in pool.imap_unordered(_wordcount_worker, tasks, chunksize=chunksize):
                 for k, v in local.items():
                     wf[k] += v
+
     except (BrokenPipeError, OSError):
         for t in tasks:
             local = _wordcount_worker(t)
