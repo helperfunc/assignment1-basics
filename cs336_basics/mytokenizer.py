@@ -14,6 +14,7 @@ from tqdm import tqdm
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 TOKEN_RE = re.compile(PAT)
 SINGLE_BYTES = [bytes([i]) for i in range(256)]
+_WORD_PAT = re.compile(PAT)
 
 def _compile_special_pattern(special_tokens: List[str]) -> re.Pattern | None:
     if not special_tokens:
@@ -65,8 +66,6 @@ def find_chunk_boundaries(
                 break
             scan += len(buf)
     return sorted(set(boundaries))
-
-_WORD_PAT = re.compile(PAT)
 
 def _split_by_special(text: str, special_tokens: List[str]) -> List[str]:
     if not special_tokens:
