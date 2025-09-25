@@ -160,6 +160,33 @@ def _merge_word_all(word: List[int], a: int, b: int, new_id: int) -> List[int]:
             i += 1
     return out
 
+def _merge_positions_nonoverlap(w: List[int], a: int, b: int) -> List[int]:
+    """Positions of non-overlapping (a,b) matches, matching the merge pass."""
+    pos = []
+    i, L = 0, len(w)
+    while i + 1 < L:
+        if w[i] == a and w[i+1] == b:
+            pos.append(i)
+            i += 2
+        else:
+            i += 1
+    return pos
+
+def _merge_word_all_with_positions(w: List[int], a: int, b: int, new_id: int) -> Tuple[List[int], List[int]]:
+    """Merge all (a,b)->new_id and also return indices where new_id was inserted."""
+    out = []
+    new_pos = []
+    i, L = 0, len(w)
+    while i < L:
+        if i + 1 < L and w[i] == a and w[i+1] == b:
+            new_pos.append(len(out))
+            out.append(new_id)
+            i += 2
+        else:
+            out.append(w[i])
+            i += 1
+    return out, new_pos
+
 def BPE_tokenizer_training(
     input_path: str,
     vocab_size: int,
@@ -259,6 +286,7 @@ def BPE_tokenizer_training(
 
         # We'll remove best_pair from its bucket at the end of processing all affected words
         # (since its count will go to zero)
+                # words affected by (a,b)
         affected = list(pair_to_words.get(best_pair, ()))
 
         for wi in affected:
@@ -267,44 +295,57 @@ def BPE_tokenizer_training(
             if len(w) < 2:
                 continue
 
-            # subtract old pairs along the whole word
-            # and update both pair_counts and buckets
-            prev = w[0]
-            for i in range(len(w) - 1):
-                nxt = w[i + 1]
-                p = (prev, nxt)
-                old_c = pair_counts.get(p)
-                if old_c is not None:
-                    new_c = old_c - f
-                    if new_c <= 0:
-                        pair_counts.pop(p, None)
-                    else:
-                        pair_counts[p] = new_c
-                    remove_from_bucket(p, old_c)
-                    add_to_bucket(p, new_c if new_c and new_c > 0 else 0)
-                s = pair_to_words.get(p)
-                if s is not None:
-                    s.discard(wi)
-                prev = nxt  # move forward
+            # 1) find merge positions; if none, skip (pair_to_words can be over-inclusive)
+            pos = _merge_positions_nonoverlap(w, a, b)
+            if not pos:
+                continue
 
-            # perform the merge (a,b) -> new_index
-            w[:] = _merge_word_all(w, a, b, new_index)
+            # 2) decrement ONLY pairs in neighborhoods around each match
+            #    affected starts in the OLD word: {s-1, s, s+1}
+            old_aff_starts = set()
+            for s in pos:
+                if s - 1 >= 0: old_aff_starts.add(s - 1)
+                old_aff_starts.add(s)
+                if s + 1 < len(w) - 1: old_aff_starts.add(s + 1)
 
-            # add new pairs along the whole word
-            if len(w) >= 2:
-                prev = w[0]
-                for i in range(len(w) - 1):
-                    nxt = w[i + 1]
-                    p = (prev, nxt)
+            for i0 in old_aff_starts:
+                if 0 <= i0 < len(w) - 1:
+                    p = (w[i0], w[i0 + 1])
+                    old_c = pair_counts.get(p)
+                    if old_c is not None:
+                        new_c = old_c - f
+                        if new_c <= 0:
+                            pair_counts.pop(p, None)
+                        else:
+                            pair_counts[p] = new_c
+                        # update buckets (we don't need exact pair_to_words cleanup here)
+                        remove_from_bucket(p, old_c)
+                        if new_c and new_c > 0:
+                            add_to_bucket(p, new_c)
+
+            # 3) perform the merge and collect where new_id was inserted
+            new_w, new_pos = _merge_word_all_with_positions(w, a, b, new_index)
+
+            # 4) increment ONLY pairs in neighborhoods around each insertion
+            #    affected starts in the NEW word: {j-1, j}
+            new_aff_starts = set()
+            for j in new_pos:
+                if j - 1 >= 0: new_aff_starts.add(j - 1)
+                if j < len(new_w) - 1: new_aff_starts.add(j)
+
+            for i1 in new_aff_starts:
+                if 0 <= i1 < len(new_w) - 1:
+                    p = (new_w[i1], new_w[i1 + 1])
                     new_c = pair_counts.get(p, 0) + f
                     pair_counts[p] = new_c
-                    pair_to_words[p].add(wi)
+                    pair_to_words[p].add(wi)  # over-inclusive is OK
                     add_to_bucket(p, new_c)
-                    prev = nxt
+
+            # 5) commit the new word
+            w[:] = new_w
 
         # (a,b) should be gone now
         pair_to_words.pop(best_pair, None)
-        # ensure it's removed from its bucket
         remove_from_bucket(best_pair, best_count)
 
     return vocab, merges
