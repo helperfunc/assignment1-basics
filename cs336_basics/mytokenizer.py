@@ -2,7 +2,7 @@ import os
 import regex as re
 import multiprocessing as mp
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, BinaryIO
+from typing import Dict, List, Tuple, Optional, BinaryIO, Set
 import heapq
 import mmap
 from tqdm import tqdm
@@ -13,8 +13,8 @@ from tqdm import tqdm
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 TOKEN_RE = re.compile(PAT)
-SINGLE_BYTES = [bytes([i]) for i in range(256)]
 _WORD_PAT = re.compile(PAT)
+SINGLE_BYTES = [bytes([i]) for i in range(256)]
 
 def _compile_special_pattern(special_tokens: List[str]) -> re.Pattern | None:
     if not special_tokens:
@@ -138,7 +138,7 @@ def _collect_word_freqs_parallel(
                         wf[k] += v
                     pbar.update(1)
         except (BrokenPipeError, OSError):
-            # 顺序回退路径也给进度条
+            # fallback path
             for t in tasks:
                 local = _wordcount_worker(t)
                 for k, v in local.items():
@@ -152,11 +152,6 @@ def _collect_word_freqs_parallel(
 # ----------------------------
 # Training core (deterministic tie-break on BYTES)
 # ----------------------------
-
-def _pairs_of(word: List[int]) -> List[Tuple[int, int]]:
-    if len(word) < 2:
-        return []
-    return list(zip(word, word[1:]))
 
 def _merge_word_all(word: List[int], a: int, b: int, new_id: int) -> List[int]:
     out = []
@@ -197,6 +192,11 @@ def _merge_word_all_with_positions(w: List[int], a: int, b: int, new_id: int) ->
             out.append(w[i])
             i += 1
     return out, new_pos
+
+def _desc_lex_key(b: bytes) -> tuple[int, ...]:
+    """Key for descending lexicographic compare on bytes (GPT-2 tie-break).
+    Compare (255-x) elementwise and append 256 so longer strings > prefixes."""
+    return tuple(255 - x for x in b) + (256,)
 
 def BPE_tokenizer_training(
     input_path: str,
@@ -239,28 +239,27 @@ def BPE_tokenizer_training(
 
     merges: List[Tuple[bytes, bytes]] = []
 
-    # ---- buckets: count -> set of pairs, and a max-heap over counts ----
-    buckets: Dict[int, Set[Pair]] = defaultdict(set)
-    for p, c in pair_counts.items():
+    # ---- tie-break key cache for every token id ----
+    # ids are contiguous and monotonically increasing, so list-index == token id
+    lex_key: List[tuple[int, ...]] = [None] * (256 + len(special_tokens))
+    for i in range(256):
+        lex_key[i] = _desc_lex_key(bytes([i]))
+    nid0 = 256
+    for s in special_tokens:
+        lex_key[nid0] = _desc_lex_key(s.encode("utf-8"))
+        nid0 += 1
+
+    # ---- single heap with lazy invalidation ----
+    # store: (-count, lex_key[a], lex_key[b], a, b)
+    heap: List[tuple[int, tuple[int,...], tuple[int,...], int, int]] = []
+    for (a, b), c in pair_counts.items():
         if c > 0:
-            buckets[c].add(p)
+            heapq.heappush(heap, (-c, lex_key[a], lex_key[b], a, b))
 
-    # max-heap of counts (store negative for heapq)
-    count_heap: List[int] = []
-    for c in buckets:
-        if buckets[c]:
-            heapq.heappush(count_heap, -c)
-
-    def add_to_bucket(p: Pair, new_c: int):
-        if new_c > 0:
-            buckets[new_c].add(p)
-            heapq.heappush(count_heap, -new_c)
-
-    def remove_from_bucket(p: Pair, old_c: int):
-        if old_c > 0:
-            bs = buckets.get(old_c)
-            if bs is not None:
-                bs.discard(p)
+    def _push(a: int, b: int):
+        c = pair_counts.get((a, b), 0)
+        if c > 0:
+            heapq.heappush(heap, (-c, lex_key[a], lex_key[b], a, b))
 
     # ---- progress bar setup ----
     merges_target = vocab_size - len(vocab)
@@ -268,25 +267,21 @@ def BPE_tokenizer_training(
 
     try:
         # ---- main training loop ----
-        while len(vocab) < vocab_size and pair_counts and count_heap:
-            # find the current non-empty max count
-            while count_heap and (not buckets.get(-count_heap[0], None)):
-                heapq.heappop(count_heap)
-            if not count_heap:
+        while len(vocab) < vocab_size and pair_counts and heap:
+            # pop stale entries until the top reflects current count
+            while heap:
+                negc, _, _, a, b = heap[0]
+                cur = pair_counts.get((a, b), 0)
+                if cur > 0 and -negc == cur:
+                    best_pair = (a, b)
+                    best_count = cur
+                    break
+                heapq.heappop(heap)  # stale
+            else:
                 break
 
-            best_count = -count_heap[0]
             if best_count < 1:
                 break
-
-            # exact GPT-2 tie-break within the top-count bucket
-            candidates = buckets[best_count]
-            cand_list = [p for p in candidates if pair_counts.get(p, 0) == best_count]
-            if not cand_list:
-                heapq.heappop(count_heap)
-                continue
-
-            best_pair = max(cand_list, key=lambda p: (vocab[p[0]], vocab[p[1]]))
 
             a, b = best_pair
             new_index = next_id
@@ -295,8 +290,10 @@ def BPE_tokenizer_training(
             # record merge (in bytes) & register new token
             merges.append((vocab[a], vocab[b]))
             vocab[new_index] = vocab[a] + vocab[b]
+            # add tie-break key for the newly formed token
+            lex_key.append(_desc_lex_key(vocab[new_index]))
 
-            # ✅ update progress after a successful merge
+            # progress
             pbar.update(1)
             pbar.set_postfix(top_count=best_count)
 
@@ -309,12 +306,12 @@ def BPE_tokenizer_training(
                 if len(w) < 2:
                     continue
 
-                # 1) find merge positions; if none, skip
+                # 1) non-overlapping positions of (a,b)
                 pos = _merge_positions_nonoverlap(w, a, b)
                 if not pos:
                     continue
 
-                # 2) decrement ONLY pairs in neighborhoods around each match
+                # 2) decrement ONLY neighborhoods in OLD word: {s-1, s, s+1}
                 old_aff_starts = set()
                 for s in pos:
                     if s - 1 >= 0: old_aff_starts.add(s - 1)
@@ -329,16 +326,18 @@ def BPE_tokenizer_training(
                             new_c = old_c - f
                             if new_c <= 0:
                                 pair_counts.pop(p, None)
+                                # safe to free entire set when the pair disappears globally
+                                pair_to_words.pop(p, None)
                             else:
                                 pair_counts[p] = new_c
-                            remove_from_bucket(p, old_c)
-                            if new_c and new_c > 0:
-                                add_to_bucket(p, new_c)
+                                _push(p[0], p[1])
+                        # NOTE: do NOT discard wi from pair_to_words[p] here.
+                        # Over-inclusion is safe and preserves correctness.
 
                 # 3) merge and collect where new_id was inserted
                 new_w, new_pos = _merge_word_all_with_positions(w, a, b, new_index)
 
-                # 4) increment ONLY pairs in neighborhoods around each insertion
+                # 4) increment ONLY neighborhoods in NEW word: {j-1, j}
                 new_aff_starts = set()
                 for j in new_pos:
                     if j - 1 >= 0: new_aff_starts.add(j - 1)
@@ -350,14 +349,14 @@ def BPE_tokenizer_training(
                         new_c = pair_counts.get(p, 0) + f
                         pair_counts[p] = new_c
                         pair_to_words[p].add(wi)  # over-inclusive is OK
-                        add_to_bucket(p, new_c)
+                        _push(p[0], p[1])
 
                 # 5) commit the new word
                 w[:] = new_w
 
-            # (a,b) done
+            # (a,b) no longer valid
             pair_to_words.pop(best_pair, None)
-            remove_from_bucket(best_pair, best_count)
+
     finally:
         pbar.close()
 
