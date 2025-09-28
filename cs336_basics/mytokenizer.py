@@ -12,15 +12,7 @@ from tqdm import tqdm
 # ----------------------------
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-TOKEN_RE = re.compile(PAT)
 _WORD_PAT = re.compile(PAT)
-SINGLE_BYTES = [bytes([i]) for i in range(256)]
-
-def _compile_special_pattern(special_tokens: List[str]) -> re.Pattern | None:
-    if not special_tokens:
-        return None
-    parts = [re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)]
-    return re.compile("(" + "|".join(parts) + ")")
 
 # ----------------------------
 # Efficient preprocessing
@@ -152,20 +144,6 @@ def _collect_word_freqs_parallel(
 # ----------------------------
 # Training core (deterministic tie-break on BYTES)
 # ----------------------------
-
-def _merge_word_all(word: List[int], a: int, b: int, new_id: int) -> List[int]:
-    out = []
-    i = 0
-    L = len(word)
-    while i < L:
-        if i + 1 < L and word[i] == a and word[i + 1] == b:
-            out.append(new_id)
-            i += 2
-        else:
-            out.append(word[i])
-            i += 1
-    return out
-
 def _merge_positions_nonoverlap(w: List[int], a: int, b: int) -> List[int]:
     """Positions of non-overlapping (a,b) matches, matching the merge pass."""
     pos = []
