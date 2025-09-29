@@ -1,16 +1,22 @@
-from __future__ import annotations
-
+import base64
+import json
+import re
 from typing import Iterable, Iterator, Optional, Dict, List, Tuple
-import collections
+from .mytokenizer import _WORD_PAT
+SINGLE_BYTES = {i: bytes([i]) for i in range(256)}
 
-# Import helpers from our training module
-from .mytokenizer import (
-    deserialize_load_vocab,
-    deserialize_load_merges,
-    _compile_special_pattern,
-    TOKEN_RE,
-    SINGLE_BYTES,
-)
+def deserialize_load_vocab(saved_path: str) -> Dict[int, bytes]:
+    with open(saved_path, 'r') as f:
+        json_data = json.loads(f.read())
+    loaded_json = json.loads(json_data)
+    return {int(k): base64.b64decode(v.encode('utf-8')) for k, v in loaded_json.items()}
+
+
+def deserialize_load_merges(saved_path: str) -> List[Tuple[bytes, bytes]]:
+    with open(saved_path, 'r') as f:
+        json_data = json.loads(f.read())
+    return [(base64.b64decode(a.encode('utf-8')), base64.b64decode(b.encode('utf-8'))) 
+            for a, b in json_data]
 
 class Tokenizer:
     '''
@@ -40,7 +46,12 @@ class Tokenizer:
             pair: i for i, pair in enumerate(self.merges)
         }
         # Precompile special token pattern (longest first) if provided
-        self._special_pat = _compile_special_pattern(self.special_tokens or [])
+        if self.special_tokens:
+            escaped = (re.escape(tok) for tok in sorted(self.special_tokens, key=len, reverse=True))
+            self._special_pat = re.compile("(" + "|".join(escaped) + ")")
+        else:
+            self._special_pat = None
+
     
     @classmethod
     def from_files(
@@ -134,7 +145,7 @@ class Tokenizer:
         if text == "":
             return ids
         # Tokenize into GPT-2 regex tokens first
-        for m in TOKEN_RE.finditer(text):
+        for m in _WORD_PAT.finditer(text):
             token = m.group()
             if token == "":
                 continue

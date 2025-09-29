@@ -13,12 +13,6 @@ def serialize_save_vocab(vocab: Dict[int, bytes], saved_path: str) -> None:
     with open(saved_path, 'w') as f:
         f.write(serialized)
 
-def deserialize_load_vocab(saved_path: str) -> Dict[int, bytes]:
-    with open(saved_path, 'r') as f:
-        json_data = json.loads(f.read())
-    loaded_json = json.loads(json_data)
-    return {int(k): base64.b64decode(v.encode('utf-8')) for k, v in loaded_json.items()}
-
 def serialize_save_merges(merges: List[Tuple[bytes, bytes]], saved_path: str) -> None:
     # save the serialized merges to saved_path
     # Convert each tuple of bytes to a list of base64-encoded strings
@@ -27,12 +21,6 @@ def serialize_save_merges(merges: List[Tuple[bytes, bytes]], saved_path: str) ->
     serialized = json.dumps(json_data)
     with open(saved_path, 'w') as f:
         f.write(serialized)
-
-def deserialize_load_merges(saved_path: str) -> List[Tuple[bytes, bytes]]:
-    with open(saved_path, 'r') as f:
-        json_data = json.loads(f.read())
-    return [(base64.b64decode(a.encode('utf-8')), base64.b64decode(b.encode('utf-8'))) 
-            for a, b in json_data]
 
 def train_bpe_tinystories(input_path: str, vocab_size: int, special_tokens: List[str],
                           num_processes: int = 8):
