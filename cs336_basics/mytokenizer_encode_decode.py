@@ -2,14 +2,13 @@ import base64
 import json
 import re
 from typing import Iterable, Iterator, Optional, Dict, List, Tuple
-from .mytokenizer import _WORD_PAT
+from mytokenizer import _WORD_PAT
 SINGLE_BYTES = {i: bytes([i]) for i in range(256)}
 
 def deserialize_load_vocab(saved_path: str) -> Dict[int, bytes]:
     with open(saved_path, 'r') as f:
         json_data = json.loads(f.read())
-    loaded_json = json.loads(json_data)
-    return {int(k): base64.b64decode(v.encode('utf-8')) for k, v in loaded_json.items()}
+    return {int(k): base64.b64decode(v.encode('utf-8')) for k, v in json_data.items()}
 
 
 def deserialize_load_merges(saved_path: str) -> List[Tuple[bytes, bytes]]:
