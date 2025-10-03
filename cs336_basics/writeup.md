@@ -57,32 +57,102 @@ print(decode_bytes(b'\xc0\xaf'))
 ```
 > To encode `/` (U+002F = 0b00101111, 00000000 00101111). In UTF-8, the format 110xxxxx 10xxxxxx is used for multi-byte character, prevent confusion with single-byte characters. When we split the bits 00000000 00101111 to fit the two-byte UTF-8, we have 11000000 10101111 (`b'\xc0\xaf'`), which is a overlong encoding of `/`. Decoding `b'\xc0\xaf'` will get `UnicodeDecodeError`.
 
+### Problem (train_bpe_tinystories): BPE Training on TinyStories
+(a) pretokenization takes 111.482s. The longest token in the vocabulary from `get_longest_token.py` is `accomplishment`. It make sense.
+(b) `_collect_word_freqs_parallel` takes the most of the time.
 ```
 $ python cs336_basics/train_corpus_tokenizer.py 
-         28282355 function calls (28282219 primitive calls) in 71.357 seconds                                             
+         22225266 function calls (22225130 primitive calls) in 127.566 seconds                        
 
    Ordered by: cumulative time
-   List reduced from 479 to 20 due to restriction <20>
+   List reduced from 489 to 20 due to restriction <20>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.084    0.084   71.357   71.357 /chronos_data/huixu/assignment1-basics/cs336_basics/train_corpus_tokenizer.py:37(train_bpe_tinystories)
-        1    5.119    5.119   71.213   71.213 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:202(BPE_tokenizer_training)
-        1    0.379    0.379   56.644   56.644 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:110(_collect_word_freqs_parallel)
-       17    0.000    0.000   56.143    3.303 /chronos_data/conda_envs/irt/lib/python3.10/threading.py:288(wait)
-       17    0.000    0.000   56.143    3.303 /chronos_data/conda_envs/irt/lib/python3.10/multiprocessing/pool.py:853(next)
-       71   56.143    0.791   56.143    0.791 {method 'acquire' of '_thread.lock' objects}
-     9743    0.058    0.000    2.163    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1402(set_postfix)
-     9871    0.020    0.000    2.077    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1325(refresh)
-     9873    0.022    0.000    2.018    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1464(display)
-  1180814    1.397    0.000    1.867    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:255(add_to_bucket)
-     9871    0.030    0.000    1.359    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1150(__str__)
-    29615    0.023    0.000    1.332    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:378(disp_len)
-    29615    0.021    0.000    1.291    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:374(_text_width)
-     9871    0.206    0.000    1.272    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:464(format_meter)
-    29615    0.321    0.000    1.270    0.000 {built-in method builtins.sum}
-   924429    1.067    0.000    1.067    0.000 {built-in method _heapq.heappop}
-   317920    0.806    0.000    1.047    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:187(_merge_word_all_with_positions)
-  3168825    0.666    0.000    0.948    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:375(<genexpr>)
-  4952920    0.896    0.000    0.896    0.000 {method 'get' of 'dict' objects}
-   508353    0.530    0.000    0.771    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:285(<listcomp>)
+        1    0.071    0.071  127.566  127.566 /chronos_data/huixu/assignment1-basics/cs336_basics/train_corpus_tokenizer.py:25(train_bpe_tinystories)
+        1    5.042    5.042  127.435  127.435 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:179(BPE_tokenizer_training)
+        1    0.380    0.380  111.482  111.482 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:101(_collect_word_freqs_parallel)
+       20    0.000    0.000  110.464    5.523 /chronos_data/conda_envs/irt/lib/python3.10/threading.py:288(wait)
+       17    0.000    0.000  110.464    6.498 /chronos_data/conda_envs/irt/lib/python3.10/multiprocessing/pool.py:853(next)
+       83  110.464    1.331  110.464    1.331 {method 'acquire' of '_thread.lock' objects}
+     9743    0.130    0.000    3.207    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1402(set_postfix)
+     9881    0.023    0.000    3.014    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1325(refresh)
+     9883    0.027    0.000    2.942    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1464(display)
+   923569    2.702    0.000    2.702    0.000 {built-in method _heapq.heappop}
+     9881    0.043    0.000    1.758    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:1150(__str__)
+  1180814    1.164    0.000    1.728    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:237(_push)
+    29645    0.034    0.000    1.661    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:378(disp_len)
+     9881    0.255    0.000    1.641    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:464(format_meter)
+    29645    0.024    0.000    1.606    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:374(_text_width)
+    29645    0.376    0.000    1.582    0.000 {built-in method builtins.sum}
+   317920    0.940    0.000    1.233    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:159(_merge_word_all_with_positions)
+  2775922    0.833    0.000    1.206    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/utils.py:375(<genexpr>)
+     9883    0.033    0.000    1.153    0.000 /chronos_data/conda_envs/irt/lib/python3.10/site-packages/tqdm/std.py:457(print_status)
+   524104    0.687    0.000    0.774    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:147(_merge_positions_nonoverlap)
 ```
+
+### Problem (train_bpe_expts_owt): BPE Training on OpenWebText
+(a) The longest token is '----------------------------------------------------------------'. It does not make sense.
+(b) 
+```
+$ python cs336_basics/compare_tokenizers.py 
+TinyStories:
+  vocab size:  10000
+  merges:       9743
+  avg bytes/token: 5.85
+  max bytes/token: 15
+  longest token (utf-8, errors ignored): ' accomplishment'
+  first 5 merges: [('h', 'e'), (' ', 't'), (' ', 'a'), (' ', 's'), (' ', 'w')]
+  last 5 merges: [(' pound', 'ing'), (' pl', 'umber'), (' Stan', 'ley'), ('el', 've'), (' tap', 's')]
+
+OpenWebText:
+  vocab size:  32000
+  merges:      31743
+  avg bytes/token: 6.33
+  max bytes/token: 64
+  longest token (utf-8, errors ignored): '----------------------------------------------------------------'
+  first 5 merges: [(' ', 't'), (' ', 'a'), ('h', 'e'), ('i', 'n'), ('r', 'e')]
+  last 5 merges: [(' o', 'y'), (' comp', 'ounded'), (' Ass', 'uming'), ('ow', 'an'), (' sa', 'p')]
+```
+
+```
+  2072150409 function calls (2072150268 primitive calls) in 3684.086 seconds
+
+   Ordered by: cumulative time
+   List reduced from 498 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1   20.297   20.297 3684.086 3684.086 /chronos_data/huixu/assignment1-basics/cs336_basics/train_corpus_tokenizer.py:34(train_bpe_expts_owt)
+        1  763.489  763.489 3663.396 3663.396 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:179(BPE_tokenizer_training)
+113443969 1258.440    0.000 1258.440    0.000 {built-in method _heapq.heappop}
+        1   31.540   31.540  788.843  788.843 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:101(_collect_word_freqs_parallel)
+        5    0.000    0.000  756.692  151.338 /data/backup/anaconda3/lib/python3.9/threading.py:280(wait)
+       23  756.692   32.900  756.692   32.900 {method 'acquire' of '_thread.lock' objects}
+       17    0.000    0.000  756.692   44.511 /data/backup/anaconda3/lib/python3.9/multiprocessing/pool.py:850(next)
+157404951  147.785    0.000  256.793    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:237(_push)
+ 36921495  152.140    0.000  212.215    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:159(_merge_word_all_with_positions)
+ 70974164  143.804    0.000  158.811    0.000 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:147(_merge_positions_nonoverlap)
+428766427  121.979    0.000  121.979    0.000 {method 'get' of 'dict' objects}
+157424682   80.452    0.000   80.452    0.000 {built-in method _heapq.heappush}
+350978321   59.267    0.000   59.267    0.000 {method 'append' of 'list' objects}
+277623076   58.555    0.000   58.555    0.000 {method 'add' of 'set' objects}
+466628924   50.779    0.000   50.779    0.000 {built-in method builtins.len}
+    40114    0.208    0.000   16.027    0.000 /data/backup/anaconda3/lib/python3.9/site-packages/tqdm/std.py:1326(refresh)
+    40116    0.184    0.000   15.277    0.000 /data/backup/anaconda3/lib/python3.9/site-packages/tqdm/std.py:1465(display)
+        1   14.965   14.965   14.965   14.965 /chronos_data/huixu/assignment1-basics/cs336_basics/mytokenizer.py:201(<listcomp>)
+    31743    0.658    0.000   13.536    0.000 /data/backup/anaconda3/lib/python3.9/site-packages/tqdm/std.py:1403(set_postfix)
+    40116    0.185    0.000    9.952    0.000 /data/backup/anaconda3/lib/python3.9/site-packages/tqdm/std.py:460(print_status)
+```
+
+### Problem (tokenizer): Implementing the tokenizer
+`uv run pytest tests/test_tokenizer.py` all test passed.
+
+### Problem (tokenizer_experiments): Experiments with tokenizers
+```
+$ python cs336_basics/tokenizer_analysis.py --tinystories TinyStories/TinyStories-train.txt --openwebtext openwebtext/owt_corpus.txt --n-docs 10
+TinyStories tokenizer on TinyStories: 4.181 bytes/token
+OpenWebText tokenizer on OpenWebText: 4.557 bytes/token
+TinyStories tokenizer on OpenWebText: 3.320 bytes/token
+Tokenizer throughput (OpenWebText tokenizer): 0.39 MB/s
+Estimated time for 825GB: 623.97 hours
+```
+`uint16` stores integers up to `65,535`, which comfortably covers both vocabularies (`10k` and `32k` tokens), while halving the storage footprint compared to `uint32` and keeping NumPy operations fast.
