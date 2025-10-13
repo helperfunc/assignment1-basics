@@ -2,7 +2,7 @@ import base64
 import json
 import re
 from typing import Iterable, Iterator, Optional, Dict, List, Tuple
-from mytokenizer import _WORD_PAT
+from .mytokenizer import _WORD_PAT
 SINGLE_BYTES = {i: bytes([i]) for i in range(256)}
 
 def deserialize_load_vocab(saved_path: str) -> Dict[int, bytes]:
