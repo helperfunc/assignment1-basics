@@ -12,8 +12,8 @@ class MultiHeadSelfAttention(torch.nn.Module):
         self.d_k = d_model // num_heads
         self.d_v = self.d_k
         self.rope = rope
-        self.W_qkv = Linear(num_heads * self.d_k, 3*d_model, device=device, dtype=dtype)
-        self.W_o = Linear(d_model, num_heads * self.d_v, device=device, dtype=dtype)
+        self.W_qkv = Linear(d_model, 3*d_model, device=device, dtype=dtype)
+        self.W_o = Linear(d_model, d_model, device=device, dtype=dtype)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None, token_positions: torch.Tensor | None = None) -> torch.Tensor:
         '''
@@ -50,16 +50,23 @@ class MultiHeadSelfAttention(torch.nn.Module):
                 # [0, 1, 2, ..., seq_len - 1]
                 token_pos = torch.arange(seq_len, device=x.device)
                 # [..., seq_len]
-                token_pos = token_pos.view(*([1] * len(batch_size)), seq_len)
+                token_pos = token_pos.view(*([1] * len(batch_shape)), seq_len)
                 token_pos = token_pos.expand(*batch_shape, seq_len)
             else:
                 token_pos = token_positions
+            
+            # Expand to include num_heads dimension: [..., num_heads, seq_len]
+            # unsqueeze(-2): [..., 1, seq_len]
+            # expand: [..., num_heads, seq_len]
+            token_pos = token_pos.unsqueeze(-2).expand(*batch_shape, self.num_heads, seq_len)
+
             # apply RoPE independently for each head
             # reshape [...*num_heads, seq_len, d_k]
             original_Q_shape = Q.shape
             original_K_shape = K.shape
             Q_flat = Q.reshape(-1, seq_len, self.d_k)
             K_flat = K.reshape(-1, seq_len, self.d_k)
+            # reshape flat: [...*num_heads, seq_len]
             token_pos_flat = token_pos.reshape(-1, seq_len)
 
             Q_flat = self.rope(Q_flat, token_pos_flat)

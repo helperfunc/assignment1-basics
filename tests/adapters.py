@@ -20,6 +20,7 @@ from cs336_basics._3modules.RoPE import RoPE
 from cs336_basics._3modules.softmax import softmax
 from cs336_basics._3modules.scaled_dot_product_attention import scaled_dot_product_attention
 from cs336_basics._3modules.multihead_self_attention import MultiHeadSelfAttention
+from cs336_basics._3modules.transformer_block import TransformerBlock
 
 def run_linear(
     d_in: int,
@@ -259,63 +260,42 @@ def run_transformer_block(
     return the output of running the Transformer block on the input features.
 
     This function should use RoPE.
-    Depending on your implementation, you may simply need to pass the relevant args
-    to your TransformerBlock constructor, or you may need to initialize your own RoPE
-    class and pass that instead.
-
-    Args:
-        d_model (int): The dimensionality of the Transformer block input.
-        num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be
-            evenly divisible by `num_heads`.
-        d_ff (int): Dimensionality of the feed-forward inner layer.
-        max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
-        theta (float): RoPE parameter.
-        weights (dict[str, Tensor]):
-            State dict of our reference implementation.
-            The keys of this dictionary are:
-            - `attn.q_proj.weight`
-                The query projections for all `num_heads` attention heads.
-                Shape is (d_model, d_model).
-                The rows are ordered by matrices of shape (num_heads, d_k),
-                so `attn.q_proj.weight == torch.cat([q_heads.0.weight, ..., q_heads.N.weight], dim=0)`.
-            - `attn.k_proj.weight`
-                The key projections for all `num_heads` attention heads.
-                Shape is (d_model, d_model).
-                The rows are ordered by matrices of shape (num_heads, d_k),
-                so `attn.k_proj.weight == torch.cat([k_heads.0.weight, ..., k_heads.N.weight], dim=0)`.
-            - `attn.v_proj.weight`
-                The value projections for all `num_heads` attention heads.
-                Shape is (d_model, d_model).
-                The rows are ordered by matrices of shape (num_heads, d_v),
-                so `attn.v_proj.weight == torch.cat([v_heads.0.weight, ..., v_heads.N.weight], dim=0)`.
-            - `attn.output_proj.weight`
-                Weight of the multi-head self-attention output projection
-                Shape is (d_model, d_model).
-            - `ln1.weight`
-                Weights of affine transform for the first RMSNorm
-                applied in the transformer block.
-                Shape is (d_model,).
-            - `ffn.w1.weight`
-                Weight of the first linear transformation in the FFN.
-                Shape is (d_model, d_ff).
-            - `ffn.w2.weight`
-                Weight of the second linear transformation in the FFN.
-                Shape is (d_ff, d_model).
-            - `ffn.w3.weight`
-                Weight of the third linear transformation in the FFN.
-                Shape is (d_model, d_ff).
-            - `ln2.weight`
-                Weights of affine transform for the second RMSNorm
-                applied in the transformer block.
-                Shape is (d_model,).
-        in_features (Float[Tensor, "batch sequence_length d_model"]):
-            Tensor to run your implementation on.
-
-    Returns:
-        Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
-        running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    # 计算每个 head 的维度
+    d_k = d_model // num_heads
+    
+    # 创建 RoPE 实例
+    rope = RoPE(theta=theta, d_k=d_k, max_seq_len=max_seq_len)
+    
+    # 创建 TransformerBlock 实例
+    transformer_block = TransformerBlock(d_model, num_heads, d_ff, rope=rope)
+    
+    # 构建状态字典，映射参考实现的键到你的实现
+    # 参考实现键 → 你的实现键
+    state_dict = {
+        # Multi-head attention: 合并 Q, K, V 权重
+        "multihead_self_attn.W_qkv.W": torch.cat([
+            weights["attn.q_proj.weight"],
+            weights["attn.k_proj.weight"],
+            weights["attn.v_proj.weight"]
+        ], dim=0),
+        "multihead_self_attn.W_o.W": weights["attn.output_proj.weight"],
+        
+        # RMSNorm
+        "rms_norm_1.g": weights["ln1.weight"],
+        "rms_norm_2.g": weights["ln2.weight"],
+        
+        # SwiGLU (feed-forward network)
+        "point_wise_ff.lin.W": weights["ffn.w2.weight"],      # W2: 输出投影
+        "point_wise_ff.glu.lin1.W": weights["ffn.w1.weight"], # W1: 第一个门控投影
+        "point_wise_ff.glu.lin2.W": weights["ffn.w3.weight"], # W3: 第二个门控投影
+    }
+    
+    # 加载权重
+    transformer_block.load_state_dict(state_dict)
+    
+    # 前向传播（不需要传递 token_positions，它会在内部自动生成）
+    return transformer_block.forward(in_features, mask=None)
 
 
 def run_transformer_lm(
