@@ -24,6 +24,8 @@ class MultiHeadSelfAttention(torch.nn.Module):
         seq_len = x.shape[-2]
 
         if mask is None:
+            # Returns the lower triangular part of the matrix (2-D tensor) or batch of matrices input, 
+            # the other elements of the result tensor out are set to 0.
             mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool))
 
         # [..., seq_len, 3*d_model]
