@@ -19,6 +19,7 @@ from cs336_basics._3modules.SwiGLU import SwiGLU
 from cs336_basics._3modules.RoPE import RoPE
 from cs336_basics._3modules.softmax import softmax
 from cs336_basics._3modules.scaled_dot_product_attention import scaled_dot_product_attention
+from cs336_basics._3modules.multihead_self_attention import MultiHeadSelfAttention
 
 def run_linear(
     d_in: int,
@@ -153,8 +154,11 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
-
+    multihead_self_attent = MultiHeadSelfAttention(d_model, num_heads, rope=None)
+    # [3*d_mode, d_in]
+    qkv_weight = torch.cat([q_proj_weight, k_proj_weight, v_proj_weight], dim=0)
+    multihead_self_attent.load_state_dict({"W_qkv.W": qkv_weight, "W_o.W": o_proj_weight})
+    return multihead_self_attent.forward(in_features, mask=None)
 
 def run_multihead_self_attention_with_rope(
     d_model: int,
@@ -193,8 +197,31 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    # dim of every head
+    d_k = d_model // num_heads
+    
+    rope = RoPE(theta=theta, d_k=d_k, max_seq_len=max_seq_len)
 
+    multihead_self_attent = MultiHeadSelfAttention(d_model, num_heads, rope=rope)
+
+    # [3*d_model, d_in]
+    qkv_weight = torch.cat([q_proj_weight, k_proj_weight, v_proj_weight], dim=0)
+
+    multihead_self_attent.load_state_dict({
+        "W_qkv.W": qkv_weight,
+        "W_o.W": o_proj_weight
+    })
+
+    if token_positions is None:
+        seq_len = in_features.shape[-2]
+        token_positions = torch.arange(seq_len, device=in_features.device)
+        batch_shape = in_features[:-2]
+        # assume batch_shape = (2,3), len(batch_shape) = 2, [1, 1, seq_len]
+        token_positions = token_positions.view(*([1] * len(batch_shape)), seq_len)
+        # (2,3,seq_len)
+        token_positions = token_positions.expand(*batch_shape, seq_len)
+    
+    return multihead_self_attent.forward(in_features, mask=None, token_positions=token_positions) 
 
 def run_rope(
     d_k: int,
