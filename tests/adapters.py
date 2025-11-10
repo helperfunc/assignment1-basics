@@ -21,6 +21,7 @@ from cs336_basics._3modules.softmax import softmax
 from cs336_basics._3modules.scaled_dot_product_attention import scaled_dot_product_attention
 from cs336_basics._3modules.multihead_self_attention import MultiHeadSelfAttention
 from cs336_basics._3modules.transformer_block import TransformerBlock
+from cs336_basics._3modules.transformer_lm import Transformer_lm
 
 def run_linear(
     d_in: int,
@@ -270,8 +271,6 @@ def run_transformer_block(
     # 创建 TransformerBlock 实例
     transformer_block = TransformerBlock(d_model, num_heads, d_ff, rope=rope)
     
-    # 构建状态字典，映射参考实现的键到你的实现
-    # 参考实现键 → 你的实现键
     state_dict = {
         # Multi-head attention: 合并 Q, K, V 权重
         "multihead_self_attn.W_qkv.W": torch.cat([
@@ -377,8 +376,45 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
-
+    transformer_lm = Transformer_lm(d_model, num_heads, d_ff, vocab_size, context_length, num_layers, rope_theta)
+    
+    state_dict = {}
+    
+    # Token embeddings
+    state_dict["embedding.embedding_mat"] = weights["token_embeddings.weight"]
+    
+    # 每一层的 Transformer block
+    for layer_idx in range(num_layers):
+        layer_prefix = f"layers.{layer_idx}"
+        
+        # Multi-head attention: 合并 Q, K, V 权重
+        state_dict[f"{layer_prefix}.multihead_self_attn.W_qkv.W"] = torch.cat([
+            weights[f"layers.{layer_idx}.attn.q_proj.weight"],
+            weights[f"layers.{layer_idx}.attn.k_proj.weight"],
+            weights[f"layers.{layer_idx}.attn.v_proj.weight"]
+        ], dim=0)
+        state_dict[f"{layer_prefix}.multihead_self_attn.W_o.W"] = weights[f"layers.{layer_idx}.attn.output_proj.weight"]
+        
+        # RMSNorm
+        state_dict[f"{layer_prefix}.rms_norm_1.g"] = weights[f"layers.{layer_idx}.ln1.weight"]
+        state_dict[f"{layer_prefix}.rms_norm_2.g"] = weights[f"layers.{layer_idx}.ln2.weight"]
+        
+        # SwiGLU (feed-forward network)
+        state_dict[f"{layer_prefix}.point_wise_ff.lin.W"] = weights[f"layers.{layer_idx}.ffn.w2.weight"]
+        state_dict[f"{layer_prefix}.point_wise_ff.glu.lin1.W"] = weights[f"layers.{layer_idx}.ffn.w1.weight"]
+        state_dict[f"{layer_prefix}.point_wise_ff.glu.lin2.W"] = weights[f"layers.{layer_idx}.ffn.w3.weight"]
+    
+    # Final RMSNorm
+    state_dict["final_norm.g"] = weights["ln_final.weight"]
+    
+    # Language model head (output projection)
+    state_dict["lm_head.W"] = weights["lm_head.weight"]
+    
+    # 加载权重
+    transformer_lm.load_state_dict(state_dict)
+    
+    # 前向传播 (不需要 softmax，返回 logits)
+    return transformer_lm.forward(in_indices, apply_softmax=False)
 
 def run_rmsnorm(
     d_model: int,
