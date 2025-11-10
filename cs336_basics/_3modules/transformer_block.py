@@ -18,7 +18,7 @@ class TransformerBlock(torch.nn.Module):
         self.rms_norm_1 = RMSNorm(d_model, device=device, dtype=dtype)
         self.multihead_self_attn = MultiHeadSelfAttention(d_model, num_heads, rope=rope, device=device, dtype=dtype)
         self.rms_norm_2 = RMSNorm(d_model, device=device, dtype=dtype)
-        self.point_wise_ff = SwiGLU(d_model)
+        self.point_wise_ff = SwiGLU(d_model, d_ff)
     
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None):
         '''

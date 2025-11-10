@@ -97,7 +97,7 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    swiglu = SwiGLU(d_model)
+    swiglu = SwiGLU(d_model, d_ff)
     swiglu.lin.load_state_dict({'W': w2_weight})
     swiglu.glu.lin1.load_state_dict({'W': w1_weight})
     swiglu.glu.lin2.load_state_dict({'W': w3_weight})

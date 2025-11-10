@@ -63,6 +63,7 @@ class RoPE(torch.nn.Module):
         # This creates a multi-scale encoding:
         # - Fast-rotating pairs capture fine-grained local relationships between adjacent tokens
         # - Slow-rotating pairs capture coarse-grained long-range dependencies
+        # 2 * (d_k//2-1) = (d_k - 2)/d_k=(2k - 2)/d_k     k = d_k//2
         angle = pos[:, None] / (theta ** (2 * dim / d_k))
         
         # Store precomputed cos/sin values as buffers (not learnable parameters)
