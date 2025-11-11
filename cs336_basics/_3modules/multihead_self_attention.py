@@ -79,6 +79,31 @@ class MultiHeadSelfAttention(torch.nn.Module):
         atten_output = scaled_dot_product_attention(Q, K, V, mask)
 
         # [..., seq_len, num_heads, d_v]
+        '''
+        Why .contiguous() is Needed After .transpose()
+        1. PyTorch's Memory Layout
+        In PyTorch, tensors have two aspects:
+
+        Logical view: The shape and how you index the tensor
+        Physical storage: How data is actually arranged in memory
+        Some operations like transpose(), permute(), and view() only change the logical view without rearranging the actual data in memory.
+
+        2. What Happens After transpose()
+        After transpose(), the tensor logically has shape [..., seq_len, num_heads, d_v], but the data in physical memory is still stored in the original order.
+
+        view() requires the tensor to be contiguous (or satisfy specific stride conditions) because:
+
+        view() only changes the shape descriptor without copying data
+        It assumes data is laid out contiguously in memory
+        If the memory is non-contiguous, view() cannot correctly interpret the reshaped tensor
+        
+        What Does contiguous() Do?
+        If already contiguous: Does nothing, returns the same tensor
+        If not contiguous: Allocates new memory and copies data in contiguous order
+        Cost: O(n) time and memory overhead
+        Necessity: Only call when needed (e.g., before view())
+        # reshape() will automatically call contiguous() if needed
+        '''
         atten_output = atten_output.transpose(-3, -2).contiguous()
         # [..., seq_len, num_heads * d_v]
         atten_output = atten_output.view(*batch_shape, seq_len, self.num_heads * self.d_v)
