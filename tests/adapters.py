@@ -23,6 +23,7 @@ from cs336_basics._3modules.multihead_self_attention import MultiHeadSelfAttenti
 from cs336_basics._3modules.transformer_block import TransformerBlock
 from cs336_basics._3modules.transformer_lm import Transformer_lm
 from cs336_basics._4training.cross_entropy import cross_entropy
+from cs336_basics._4training.AdamW import AdamW
 
 def run_linear(
     d_in: int,
@@ -529,7 +530,7 @@ def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
